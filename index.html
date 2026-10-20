@@ -44,13 +44,32 @@
   .meta b{font-weight:500;color:var(--ink)}
   ol.content{margin:8px 0 0;padding-left:1.5em}
   ol.content li{margin:6px 0}
-  .padhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:600}
-  .padwrap{position:relative;border:1.5px dashed #9aa8b6;border-radius:10px;background:#fcfdfe;touch-action:none;
-    height:min(52vw,240px)}
+
+  /* ---------- 逐字簽名 ---------- */
+  .padhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-weight:600}
+  .padhead .step{font-weight:500;font-size:14px;color:var(--muted)}
+  .slots{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+  .slot{position:relative;width:60px;height:60px;padding:0;border:1.5px solid var(--line);border-radius:10px;background:#fcfdfe}
+  .slot canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .slot .ch{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;color:#c3ccd6;pointer-events:none}
+  .slot.done .ch{display:none}
+  .slot.done{border-color:#9fd3b6}
+  .slot.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .padwrap{position:relative;width:min(100%,58vh,380px);aspect-ratio:1/1;margin:0 auto;
+    border:1.5px dashed #9aa8b6;border-radius:12px;background:#fcfdfe;touch-action:none;overflow:hidden}
+  .padwrap .grid{position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(#e2e7ed,#e2e7ed) 50% 0/1px 100% no-repeat,linear-gradient(#e2e7ed,#e2e7ed) 0 50%/100% 1px no-repeat}
   .padwrap canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
-  .baseline{position:absolute;left:8%;right:8%;bottom:26%;border-bottom:1px solid #c9d2db;pointer-events:none}
   .hint{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;color:#a4b0bc;
-    font-size:22px;letter-spacing:.3em;pointer-events:none}
+    font-size:18px;letter-spacing:.1em;pointer-events:none}
+  .padbtns{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}
+  .padbtns button{padding:10px 4px;font-size:14px;background:#fff;border:1px solid var(--line);color:var(--ink)}
+  .padbtns .next{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .padbtns button:disabled{opacity:.45;cursor:not-allowed}
+  .preview{margin-top:12px;border-radius:10px;background:var(--accent-soft);padding:10px 12px}
+  .preview .lb{font-size:13px;color:var(--accent)}
+  .preview img{display:block;max-width:100%;max-height:80px;margin:6px auto 0;background:#fff;border-radius:6px;padding:4px 10px}
+
   .tip{font-size:13px;color:var(--muted);margin:8px 0 0}
   .check{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-size:15px}
   .check input{width:22px;height:22px;margin:1px 0 0;flex:none;accent-color:var(--accent)}
@@ -103,13 +122,24 @@
     </details>
 
     <div class="card">
-      <div class="padhead"><span id="padTitle">請在框內簽名</span><button class="link" id="btnClear">清除重寫</button></div>
+      <div class="padhead"><span id="padTitle">請逐字簽名</span><span class="step" id="padStep"></span></div>
+      <div class="slots" id="slots"></div>
       <div class="padwrap" id="padWrap">
-        <div class="baseline"></div>
-        <div class="hint" id="padHint">簽 名 處</div>
+        <div class="grid"></div>
+        <div class="hint" id="padHint"></div>
         <canvas id="pad"></canvas>
       </div>
-      <p class="tip">字寫大一點、寫在框中間；手機橫放書寫空間更大。</p>
+      <div class="padbtns">
+        <button type="button" id="btnPrev">← 上一字</button>
+        <button type="button" id="btnUndo">復原一筆</button>
+        <button type="button" id="btnClear">清除此字</button>
+        <button type="button" class="next" id="btnNext">下一字 →</button>
+      </div>
+      <div class="preview" id="previewBox" hidden>
+        <div class="lb">合併後的簽名</div>
+        <img id="preview" alt="簽名預覽">
+      </div>
+      <p class="tip">一格寫一個字，字寫大一點、寫在格子中間。寫錯可點上方小格回去重寫。</p>
       <label class="check"><input type="checkbox" id="ack"><span>我已閱讀並瞭解上述宣導事項</span></label>
       <button id="btnSubmit" class="primary" disabled>送出簽名</button>
       <p class="msg" id="signMsg"></p>
@@ -178,23 +208,24 @@
     $('periodLabel').textContent = p ? ('簽名期別：' + p.id) : '目前沒有開放簽名的期別';
   }
 
-  /* ---------- 簽名板 ---------- */
+  /* ---------- 逐字簽名板 ----------
+     每個字一格（正方形），座標以格寬為 1 正規化儲存；
+     合併時各字使用相同比例（保留簽名者原本的字大小），
+     水平方向裁掉各字左右空白後依序排列，垂直方向取所有字的聯集範圍。 */
   var pad = (function(){
     var wrap = $('padWrap'), cv = $('pad'), ctx = cv.getContext('2d');
-    var strokes = [], cur = null, BASE_W = 2.8;
-    function resize(){
-      var r = wrap.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-      if(!r.width) return;
-      cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-      redraw();
-    }
-    function drawStroke(c, s, k, ox, oy){
-      var pts = s; if(!pts.length) return;
-      c.lineWidth = BASE_W * k; c.lineCap = 'round'; c.lineJoin = 'round'; c.strokeStyle = '#000';
+    var LW = 0.024;      // 筆畫粗細（佔格寬比例）
+    var GAP = 0.06;      // 合併時字距（佔格寬比例）
+    var MIN_INK = 0.2;   // 每字最少筆畫長度（格寬倍數），避免只點一下
+    var OUT_H = 200, OUT_W = 700;   // 合併圖最大尺寸（px）
+    var chars = [], data = [], idx = 0, cur = null, size = 0, hgt = 0;
+
+    function drawStroke(c, pts, k, ox, oy, mul){
+      if(!pts.length) return;
+      c.lineWidth = LW * k * (mul || 1); c.lineCap = 'round'; c.lineJoin = 'round'; c.strokeStyle = '#000';
       c.beginPath();
       c.moveTo((pts[0].x-ox)*k, (pts[0].y-oy)*k);
-      if(pts.length === 1){ c.lineTo((pts[0].x-ox)*k+0.1, (pts[0].y-oy)*k+0.1); }
+      if(pts.length === 1) c.lineTo((pts[0].x-ox)*k+0.1, (pts[0].y-oy)*k+0.1);
       for(var i=1;i<pts.length-1;i++){
         var mx = (pts[i].x + pts[i+1].x)/2, my = (pts[i].y + pts[i+1].y)/2;
         c.quadraticCurveTo((pts[i].x-ox)*k, (pts[i].y-oy)*k, (mx-ox)*k, (my-oy)*k);
@@ -202,16 +233,78 @@
       if(pts.length > 1){ var l = pts[pts.length-1]; c.lineTo((l.x-ox)*k, (l.y-oy)*k); }
       c.stroke();
     }
-    function redraw(){
-      var r = wrap.getBoundingClientRect();
-      ctx.clearRect(0,0,r.width,r.height);
-      strokes.forEach(function(s){ drawStroke(ctx, s, 1, 0, 0); });
-      $('padHint').hidden = strokes.length > 0;
+    function drawAll(c, strokes, k, ox, oy, mul){ strokes.forEach(function(s){ drawStroke(c, s, k, ox, oy, mul); }); }
+
+    function inkLen(strokes){
+      var L = 0;
+      strokes.forEach(function(s){ for(var i=1;i<s.length;i++) L += Math.hypot(s[i].x-s[i-1].x, s[i].y-s[i-1].y); });
+      return L;
     }
-    function pos(e){ var r = cv.getBoundingClientRect(); return { x:e.clientX - r.left, y:e.clientY - r.top }; }
+    function bounds(strokes){
+      var b = { x0:Infinity, y0:Infinity, x1:-Infinity, y1:-Infinity };
+      strokes.forEach(function(s){ s.forEach(function(p){
+        if(p.x<b.x0) b.x0=p.x; if(p.y<b.y0) b.y0=p.y; if(p.x>b.x1) b.x1=p.x; if(p.y>b.y1) b.y1=p.y; }); });
+      return b;
+    }
+
+    /* 上方小格（縮圖） */
+    function buildSlots(){
+      var box = $('slots'), dpr = window.devicePixelRatio || 1; box.innerHTML = '';
+      chars.forEach(function(ch, i){
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'slot'; b.title = '第 ' + (i+1) + ' 字「' + ch + '」';
+        var s = document.createElement('span'); s.className = 'ch'; s.textContent = ch;
+        var c = document.createElement('canvas'); c.width = c.height = Math.round(60 * dpr);
+        b.appendChild(s); b.appendChild(c);
+        b.addEventListener('click', function(){ go(i); });
+        box.appendChild(b);
+      });
+    }
+    function refreshSlots(){
+      var els = $('slots').children;
+      for(var i=0;i<els.length;i++){
+        var el = els[i], c = el.querySelector('canvas'), x = c.getContext('2d');
+        el.className = 'slot' + (i === idx ? ' on' : '') + (data[i].length ? ' done' : '');
+        x.clearRect(0, 0, c.width, c.height);
+        drawAll(x, data[i], c.width, 0, 0, 1.6);
+      }
+    }
+    function refreshUI(){
+      var n = chars.length, has = n && data[idx].length > 0;
+      $('padStep').textContent = n ? ('第 ' + (idx+1) + ' / ' + n + ' 字') : '';
+      $('padHint').textContent = n ? ('請寫「' + chars[idx] + '」') : '';
+      $('padHint').hidden = !n || has;
+      $('btnPrev').disabled = idx === 0;
+      $('btnUndo').disabled = $('btnClear').disabled = !has;
+      $('btnNext').disabled = !has;
+      $('btnNext').textContent = idx >= n-1 ? '完成 ✓' : '下一字 →';
+      refreshSlots();
+    }
+    function updatePreview(){
+      var any = data.some(function(s){ return s.length; });
+      $('previewBox').hidden = !any;
+      if(any) $('preview').src = toPNG();
+    }
+    function changed(){ refreshUI(); updatePreview(); onChange(); }
+
+    /* 大格（書寫區） */
+    function redraw(){
+      if(!size) return;
+      ctx.clearRect(0, 0, size, hgt);
+      if(chars.length) drawAll(ctx, data[idx], size, 0, 0);
+    }
+    function resize(){
+      var r = wrap.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      if(!r.width) return;
+      size = r.width; hgt = r.height;
+      cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+      redraw();
+    }
+    function pos(e){ var r = cv.getBoundingClientRect(); return { x:(e.clientX - r.left) / r.width, y:(e.clientY - r.top) / r.width }; }
     cv.addEventListener('pointerdown', function(e){
+      if(!chars.length) return;
       e.preventDefault(); cv.setPointerCapture(e.pointerId);
-      cur = [pos(e)]; strokes.push(cur); redraw(); onChange();
+      cur = [pos(e)]; data[idx].push(cur); $('padHint').hidden = true; redraw();
     });
     cv.addEventListener('pointermove', function(e){
       if(!cur) return; e.preventDefault();
@@ -219,43 +312,74 @@
       evs.forEach(function(ev){ cur.push(pos(ev)); });
       redraw();
     });
-    function end(){ cur = null; onChange(); }
+    function end(){ if(!cur) return; cur = null; changed(); }
     cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
     window.addEventListener('resize', function(){ setTimeout(resize, 120); });
 
-    function inkLength(){
-      var L = 0;
-      strokes.forEach(function(s){ for(var i=1;i<s.length;i++) L += Math.hypot(s[i].x-s[i-1].x, s[i].y-s[i-1].y); });
-      return L;
+    function go(i){
+      if(i < 0 || i >= chars.length) return;
+      idx = i; cur = null; redraw(); refreshUI();
     }
+    function missing(){
+      for(var i=0;i<chars.length;i++) if(inkLen(data[i]) < MIN_INK) return i;
+      return -1;
+    }
+    function next(){
+      if(idx < chars.length - 1){ go(idx + 1); return; }
+      var m = missing();
+      if(m >= 0) go(m);
+      else $('previewBox').scrollIntoView({ behavior:'smooth', block:'center' });
+    }
+
+    /* 合併成一張 PNG */
     function toPNG(){
-      var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-      strokes.forEach(function(s){ s.forEach(function(p){
-        if(p.x<minX)minX=p.x; if(p.y<minY)minY=p.y; if(p.x>maxX)maxX=p.x; if(p.y>maxY)maxY=p.y; }); });
-      var pad = BASE_W * 2, bw = (maxX-minX) + pad*2, bh = (maxY-minY) + pad*2;
-      var k = Math.min(2, 640/bw, 220/bh), url;
+      var parts = [], y0 = Infinity, y1 = -Infinity;
+      data.forEach(function(s){
+        if(!s.length) return;
+        var b = bounds(s); parts.push({ s:s, b:b });
+        if(b.y0 < y0) y0 = b.y0; if(b.y1 > y1) y1 = b.y1;
+      });
+      if(!parts.length) return '';
+      var m = LW * 1.5, w = m * 2 + GAP * (parts.length - 1), h = (y1 - y0) + m * 2;
+      parts.forEach(function(p){ w += p.b.x1 - p.b.x0; });
+      var k = Math.min(OUT_H / h, OUT_W / w), url;
       for(var tries=0; tries<6; tries++){
         var out = document.createElement('canvas');
-        out.width = Math.max(1, Math.round(bw*k)); out.height = Math.max(1, Math.round(bh*k));
-        var c = out.getContext('2d');
-        strokes.forEach(function(s){ drawStroke(c, s, k, minX-pad, minY-pad); });
+        out.width = Math.max(1, Math.round(w * k)); out.height = Math.max(1, Math.round(h * k));
+        var c = out.getContext('2d'), x = m;
+        parts.forEach(function(p){ drawAll(c, p.s, k, p.b.x0 - x, y0 - m); x += (p.b.x1 - p.b.x0) + GAP; });
         url = out.toDataURL('image/png');
         if(url.length < 45000) break;
         k *= 0.75;
       }
       return url;
     }
+
     return {
+      setChars: function(list){
+        chars = list.length ? list : ['簽'];
+        data = chars.map(function(){ return []; });
+        idx = 0; cur = null;
+        buildSlots(); resize(); redraw(); changed();
+      },
       resize: resize,
-      clear: function(){ strokes = []; cur = null; redraw(); onChange(); },
-      isEnough: function(){ return inkLength() > 40; },
-      isEmpty: function(){ return strokes.length === 0; },
+      prev: function(){ go(idx - 1); },
+      next: next,
+      go: go,
+      undo: function(){ data[idx].pop(); redraw(); changed(); },
+      clear: function(){ data[idx] = []; cur = null; redraw(); changed(); },
+      allFilled: function(){ return chars.length > 0 && data.every(function(s){ return s.length > 0; }); },
+      missing: missing,
+      charAt: function(i){ return chars[i]; },
       toPNG: toPNG
     };
   })();
 
-  function onChange(){ $('btnSubmit').disabled = pad.isEmpty() || !$('ack').checked; $('signMsg').textContent=''; }
+  function onChange(){ $('btnSubmit').disabled = !pad.allFilled() || !$('ack').checked; $('signMsg').textContent=''; }
   $('ack').addEventListener('change', onChange);
+  $('btnPrev').addEventListener('click', function(){ pad.prev(); });
+  $('btnNext').addEventListener('click', function(){ pad.next(); });
+  $('btnUndo').addEventListener('click', function(){ pad.undo(); });
   $('btnClear').addEventListener('click', function(){ pad.clear(); });
 
   /* ---------- 流程 ---------- */
@@ -277,10 +401,11 @@
     }else{
       st.className = 'status todo';
       st.textContent = '本期（' + res.period.id + '）尚未簽名，請閱讀宣導事項後簽名。';
-      $('padTitle').textContent = '請在框內簽名';
+      $('padTitle').textContent = '請逐字簽名';
       $('contentBox').open = true;
     }
-    $('ack').checked = false; pad.clear();
+    $('ack').checked = false;
+    pad.setChars(Array.from(String(res.person.name || '').replace(/\s+/g, '')));   // 「陳  擎」→ 陳、擎
     show('vSign');
   }
 
@@ -340,7 +465,14 @@
   });
 
   $('btnSubmit').addEventListener('click', function(){
-    if(!pad.isEnough()){ $('signMsg').className='msg err'; $('signMsg').textContent = '簽名太短，請完整簽名'; return; }
+    var miss = pad.missing();
+    if(miss >= 0){
+      pad.go(miss);
+      $('signMsg').className = 'msg err';
+      $('signMsg').textContent = '第 ' + (miss + 1) + ' 字「' + pad.charAt(miss) + '」簽名太短，請完整書寫';
+      $('padWrap').scrollIntoView({ behavior:'smooth', block:'center' });
+      return;
+    }
     var btn = $('btnSubmit'); btn.disabled = true; btn.textContent = '送出中…';
     var url = pad.toPNG();
     call('apiSubmit', state.person.code, state.period.id, url).then(function(res){
